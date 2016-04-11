@@ -1,5 +1,7 @@
-PACKAGE_NAME = "-project-shell-env"
+PACKAGE_NAME = "000-project-shell-env"
 PACKAGE_NAMESPACE = "project-shell-env"
+
+atom.config.set("#{PACKAGE_NAME}.debug", false)
 
 describe "ProjectShellEnv", ->
   beforeEach ->
@@ -10,7 +12,12 @@ describe "ProjectShellEnv", ->
     atom.packages.deactivatePackage PACKAGE_NAME
 
   describe "when the project-shell-env:load event is triggered", ->
-    it "load environment variables from shell in project directory", ->
+    beforeEach ->
+      process.env['ENV_VAR_1'] = '42'
+      process.env['ENV_VAR_2'] = 'test'
+      process.env['ENV_VAR_3'] = 'yaa=haa'
+
+    it "loads environment variables from shell in project directory", ->
       sendCommand "load"
 
       expect( process.env[ "ENV_VAR_1" ]).toEqual "42"
@@ -21,7 +28,7 @@ describe "ProjectShellEnv", ->
     beforeEach ->
       sendCommand "load"
 
-    it "unload environment variables that was loaded with project-shell-env:load", ->
+    it "unloads environment variables that were loaded with project-shell-env:load", ->
       sendCommand "reset"
 
       expect( process.env[ "ENV_VAR_1" ]).toBeUndefined

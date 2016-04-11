@@ -1,12 +1,21 @@
-{ spawnSync } = require "child_process"
-{ Disposable, CompositeDisposable } = require "atom"
+{ spawnSync, execFileSync } = require "child_process"
+{ Disposable, CompositeDisposable, File } = require "atom"
+
+tap = (o, fn) -> fn(o); o
+
+merge_env = (xs...) ->
+  if xs?.length > 0
+    tap {}, (m) -> m[k] = v for k, v of x for x in xs
+
+Array::to_hash = ->
+  tap {}, (m) => ([k,v] = kv.split(/\s*=\s*/); m[k] = v;) for kv in this
 
 ##
 # Helper function: prints debug statement into atom's console if it started in dev mode.
 #
 debug = ( statements... ) ->
-  if atom.inDevMode()
-    console.log "[project-shell-env]", statements...
+  if atom.config.get("000-project-shell-env.debug", atom.inDevMode())
+    console.log "[project-shell-env] #{statements.join(" ")}"
 
 ##
 # Helper function: escapes a string so that it can be safely used in a shell command line.
@@ -25,39 +34,43 @@ shellEscape = ( string ) ->
 # @return [String]
 #
 getShellEnv = ( path, timeout = 1000 ) ->
-  # SHELL env variable contains user's shell even when atom is launched from GUI
-  shell = process.env[ "SHELL" ] ? "bash"
+  shell = atom.config.get("000-project-shell-env.shell_path", process.env["SHELL"] ? "bash")
+  args  = [].concat( atom.config.get("000-project-shell-env.shell_args", [ "-l", "-i" ]))
 
-  # List of flags with which shell will be invoked
-  shellFlags = [
-    "-l", # We must use login shell to load user environment
-    "-i"  # We must use interactive shell to ensure user config is loaded
-  ]
+  atom_home = new File(atom.configDirPath)
+  environment =
+    ATOM_HOME: process.env["ATOM_HOME"] ? atom_home
+    NODE_PATH: process.env["NODE_PATH"]
+    NODE_ENV:  process.env["NODE_ENV"]
+    USER_HOME: process.env["HOME"] ? new File(atom_home).getParent()
+    USER_NAME: process.env["USER"] ? new File(atom_home).getParent().getBaseName()
+
+  environment = merge_env(environment,
+                         (atom.config.get("000-project-shell-env.add_environment") ? {}).to_hash())
 
   # Marker string to mark command output
   marker = "--- 8< ---"
 
   # Script that will be passed as stdin to the shell
-  shellScript = [
+  script = [
     # Change directory or exit
     # NB: some tools (eg. RVM) can redefine "cd" command to execute some code
-    "cd #{shellEscape path} || exit -1",
+    "cd . 2>/dev/null || exit -1",
 
     # Print env inside markers
-    "echo '#{marker}' && env && echo '#{marker}'",
+    "echo \"#{marker}\" && env && echo \"#{marker}\"",
 
     # Exit shell
-    "exit"
+    "exit 0"
   ]
 
-  # Spawn shell process and execute script
-  # NB: we can't use "exec" because we need full-fledged login interactive shell
-  # with command prompt because some tools (eg. direnv) may use PROMPT_COMMAND
-  # to execute some code; we also can't use "spawn" because we need to block
-  # atom until shell variable are loaded.
-  shellResult = spawnSync shell, shellFlags,
-    input:   shellScript.join( "\n" )
-    timeout: timeout
+  options =
+    timeout: timeout ? 1000
+    options:
+      env: environment
+    input: script.join("\n")
+
+  shellResult = spawnSync shell, args, options
 
   # Throw timeout error
   throw shellResult.error if shellResult.error
@@ -153,23 +166,55 @@ setAtomEnv = ( env ) ->
 class ProjectShellEnv
   # ENV variables that NEVER will be loaded
   IGNORED_ENV = [
-    "_",              # Contains previous command executed. Always equals to "env"
-    "SHLVL"           # How deeply Bash is nested. Always equals to 3
-    "NODE_PATH"       # Path for node modules. We MUST always use value provided by atom
-    "LD_LIBRARY_PATH" # Path for shared libraries. Can cause serious problems (@see issue #2)
+    "_",               # Contains previous command executed. Always equals to "env"
+    "SHLVL",           # How deeply Bash is nested. Always equals to 3
+    "NODE_PATH",       # Path for node modules. We MUST always use value provided by atom
+    "LD_LIBRARY_PATH", # Path for shared libraries. Can cause serious problems (@see issue #2),
   ]
 
   # Shell timeout
   TIMEOUT = 3000
 
+  DEFAULT_SHELL = process.env["SHELL"] ? "bash"
+  DEFAULT_SHELL_ARGS = [ "-l", "-i", ]
+
   config:
-    blacklist:
+    shell_path:
       order: 1
-      description: "List of environment variables which will be ignored."
+      description: "Path to shell to use for extracting environment variables"
+      type: "string"
+      default: DEFAULT_SHELL
+    shell_args:
+      order: 2
+      description: "Arguments to pass to shell"
+      type: "array"
+      default: DEFAULT_SHELL_ARGS
+      items:
+        type: "string"
+    add_environment:
+      order: 3
+      description: "List of environment key=value pairs to add to the environment (comma separated list)"
       type: "array"
       default: []
       items:
         type: "string"
+    blacklist:
+      order: 4
+      description: "List of environment variables which will be ignored."
+      type: "array"
+      default: IGNORED_ENV
+      items:
+        type: "string"
+    direnv:
+      order: 5
+      description: "Use direnv to set project specific environment"
+      type: "boolean"
+      default: false
+    debug:
+      order: 6
+      description: "Show debugging output in console (requires restart, or Window: Reload)."
+      type: "boolean"
+      default: atom.inDevMode()
 
   activate: =>
     # Add our commands
@@ -204,7 +249,7 @@ class ProjectShellEnv
     return unless projectRoot
 
     # Combine system and user's blacklists
-    envBlacklist = [].concat( IGNORED_ENV ).concat( atom.config.get( "project-shell-env.blacklist" ))
+    envBlacklist = [].concat( IGNORED_ENV ).concat( atom.config.get( "000-project-shell-env.blacklist" ))
 
     debug "blacklisted vars:", envBlacklist
 
